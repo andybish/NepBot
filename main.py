@@ -2233,10 +2233,6 @@ class NepBot(NepBotClass):
                     "Usage: !alerts setup OR !alerts test <rarity> OR !alerts config <config Name> <config Value>",
                     isWhisper=isWhisper)
                 return
-            if command == "followtest" and sender.lower() in self.myadmins:
-                self.message(channel, "Attempting to set follow buttons to hdnmarathon and nepnepbot", isWhisper=isWhisper)
-                setFollows(["hdnmarathon", "nepnepbot"])
-                return
             if command == "togglehoraro" and sender.lower() in self.myadmins:
                 self.autoupdate = not self.autoupdate
                 if self.autoupdate:
