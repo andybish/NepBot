@@ -3078,15 +3078,12 @@ class NepBot(NepBotClass):
                 else:
                     self.message(channel, "Usage: !sets OR !sets rarity OR !sets claim", isWhisper=isWhisper)
                     return
-            if command == "debug" and sender in self.myadmins:
-                v = []
-                for chan in self.channels:
-                    channelName = str(chan).replace("#", "")
-                    for viewer in self.channels[chan]['users']:
-                        v.append(viewer)
-                logger.debug(v)
-
-                self.message(channel, "Printed debug message", isWhisper=isWhisper)
+            if command == "debug" and sender in self.myadmins and debugMode:
+                updateBoth("Hyperdimension Neptunia", "Testing title updates.")
+                self.message(channel, "Title and game updated for testing purposes")
+                return
+            if command == "debug" and sender in self.myadmins and not debugMode:
+                self.message(channel, "Debug mode is off. Debug command disabled.")
                 return
             if command == "nepcord":
                 self.message(channel, "To join the discussion in the official Waifu TCG Discord Channel, go to %s/discord" % config["siteHost"], isWhisper=isWhisper)
