@@ -5,6 +5,7 @@ let mysql = require('mysql');
 let url = require('url');
 let fs = require('fs');
 let request = require('request');
+let jwt = require('jsonwebtoken');
 
 let download = function (uri, filename, callback) {
     request.head(uri, function (err, res, body) {
@@ -14,30 +15,46 @@ let download = function (uri, filename, callback) {
         request(uri).pipe(fs.createWriteStream(filename)).on('close', callback);
     });
 };
-
+let cors = {'Access-Control-Allow-Origin': '*'};
 let cfgfile = fs.readFileSync('nepbot.cfg', 'utf8');
 let cfglines = cfgfile.match(/[^\r\n]+/g);
 let dbpw = null;
 let dbname = null;
 let dbuser = null;
 let dbhost = null;
+let extensionsecret = null;
 for (let line of cfglines) {
     let lineparts = line.split("=");
-    if (lineparts[0] === "dbpassword") {
-        dbpw = lineparts[1];
-    }
-    else if (lineparts[0] === "database") {
-        dbname = lineparts[1];
-    }
-    else if (lineparts[0] === "dbuser") {
-        dbuser = lineparts[1];
-    }
-    else if (lineparts[0] === "dbhost") {
-        dbhost = lineparts[1];
+    switch (lineparts[0]) {
+        case "dbpassword": {
+            dbpw = lineparts[1];
+            break;
+        }
+        case "database": {
+            dbname = lineparts[1];
+            break;
+        }
+        case "dbuser": {
+            dbuser = lineparts[1];
+            break;
+        }
+        case "dbhost": {
+            dbhost = lineparts[1];
+            break;
+        }
+        case "extensionsecret": {
+            // needs the base64 decoded secret...
+            extensionsecret = Buffer.from(lineparts.slice(1).join("="), 'base64');
+            break;
+        }
+        default: {
+            console.log("Unknown config value " + lineparts[0] + " - ignoring.");
+        }
     }
 }
 
-if (dbpw === null || dbname === null || dbuser === null || dbhost === null) {
+if (dbpw === null || dbname === null || dbuser === null || dbhost === null || extensionsecret === null) {
+    console.log("Missing required config parameter...");
     process.exit(1);
     return;
 }
@@ -814,6 +831,106 @@ function profile(req, res, query) {
 }
 
 
+function extension(req, res, query) {
+    if (req.method === 'OPTIONS') {
+        res.writeHead(200, 'OK', {
+            'X-Annoyed': 'Why do i have to handle this?',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+        });
+        res.end();
+        return
+    }
+    if (!('action' in query)) {
+        res.writeHead(400, "Missing parameter action", cors);
+        res.end("You shouldn't be here.");
+        return
+    }
+
+    let auth = req.headers["authorization"];
+
+    if (!auth) {
+
+        res.writeHead(401, "Unauthorized", {"WWW-Authenticate": "Bearer", ...cors});
+        res.write("<html><head><title>Unauthorized.</title></head><body>Missing Authorization. You should not be here, this is meant for the twitch Extension only.</body></html>");
+        res.end();
+        return;
+    }
+
+    let tmp = auth.split(' ');   // Split on a space, the original auth looks like  "Bearer Y2hhcmxlczoxMjM0NQ==" and we need the 2nd part
+
+    let decoded = null;
+    try {
+        decoded = jwt.verify(tmp[1], extensionsecret);
+    } catch (err) {
+        console.log(err);
+        console.log(jwt.decode(tmp[1], extensionsecret));
+        res.writeHead(401, "Unauthorized", {"WWW-Authenticate": "Bearer", "Content-Type": "application/json", ...cors});
+        res.end(JSON.stringify({'message': 'JWT could not be verified.'}));
+        return
+    }
+    let jsonheader = {'Content-Type': 'application/json', ...cors};
+    switch (query['action']) {
+        case 'authCheck': {
+            res.writeHead(200, 'OK', jsonheader);
+            let responseobject = {};
+            responseobject['action'] = 'authCheck';
+            if ('user_id' in decoded) {
+                responseobject['success'] = true;
+                responseobject['user_id'] = decoded['user_id'];
+            } else {
+                responseobject['success'] = false;
+            }
+            res.end(JSON.stringify(responseobject));
+            return;
+        }
+        case 'points': {
+            res.writeHead(200, 'OK', jsonheader);
+            let responseobject = {};
+            responseobject['action'] = 'points';
+            if ('user_id' in decoded) {
+                responseobject['success'] = true;
+                responseobject['user_id'] = decoded['user_id'];
+                con.query('SELECT points FROM users WHERE id = ?', decoded['user_id'], function (err, result) {
+                    if (err) throw err;
+                    responseobject['points'] = result[0]['points'];
+                    res.end(JSON.stringify(responseobject));
+                });
+            } else {
+                responseobject['success'] = false;
+                res.end(JSON.stringify(responseobject));
+            }
+            break;
+
+        }
+        case 'cards': {
+            res.writeHead(200, 'OK', jsonheader);
+            let responseobject = {};
+            responseobject['action'] = 'cards';
+            if ('user_id' in decoded) {
+                responseobject['success'] = true;
+                responseobject['user_id'] = decoded['user_id'];
+                con.query("SELECT waifus.*, rarity, amount FROM waifus JOIN has_waifu ON waifus.id = has_waifu.waifuid WHERE has_waifu.userid = ? ORDER BY (has_waifu.rarity < 8) DESC, waifus.id ASC, has_waifu.rarity ASC", decoded['user_id'], function (err, result) {
+                    if (err) throw err;
+                    responseobject['cards'] = result;
+                    res.end(JSON.stringify(responseobject));
+                });
+            } else {
+                responseobject['success'] = false;
+                res.end(JSON.stringify(responseobject));
+            }
+            break;
+
+        }
+        default: {
+            console.log('unknown action ' + query['action']);
+            res.writeHead(400, 'Unkown Endpoint', cors);
+            res.end('Unknown Endpoint');
+        }
+    }
+}
+
 http.createServer(function (req, res) {
     let q = url.parse(req.url, true);
     try {
@@ -888,6 +1005,10 @@ http.createServer(function (req, res) {
             }
             case "pullfeed": {
                 pullfeed(req, res, q.query);
+                break;
+            }
+            case "extension": {
+                extension(req, res, q.query);
                 break;
             }
             default: {
