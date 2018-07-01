@@ -46,17 +46,17 @@
 <script>
 function update() {
 	let elements = document.querySelectorAll('[type="checkbox"]');
-	textField = document.getElementById("textField");
+	let textField = document.getElementById("textField");
 	
-    actionString = "";
-	for (index = 0, len = elements.length; index < len; ++index) {
+    let actionString = "";
+	for (let index = 0, len = elements.length; index < len; ++index) {
 		if (elements[index].checked) {
 			actionString += "k";
 		} else {
 			actionString += "d";
 		}
 	}
-    if(actionString.indexOf("k") == -1) {
+    if(actionString.indexOf("k") === -1) {
         textField.value = "!booster trash";
     }
     else {

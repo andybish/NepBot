@@ -923,6 +923,25 @@ function extension(req, res, query) {
             break;
 
         }
+        case 'booster': {
+            res.writeHead(200, 'OK', jsonheader);
+            let responseobject = {};
+            responseobject['action'] = 'booster';
+            if ('user_id' in decoded) {
+                responseobject['success'] = true;
+                responseobject['user_id'] = decoded['user_id'];
+                con.query("SELECT waifus.* FROM boosters_opened LEFT JOIN boosters_cards ON boosters_opened.id = boosters_cards.boosterid JOIN waifus ON boosters_cards.waifuid = waifus.id WHERE boosters_opened.userid = ? AND boosters_opened.status = 'open' ORDER BY waifus.id ASC", decoded['user_id'], function (err, result) {
+                    if (err) throw err;
+                    responseobject['cards'] = result;
+                    res.end(JSON.stringify(responseobject));
+                });
+            } else {
+                responseobject['success'] = false;
+                res.end(JSON.stringify(responseobject));
+            }
+            break;
+
+        }
         default: {
             console.log('unknown action ' + query['action']);
             res.writeHead(400, 'Unkown Endpoint', cors);
