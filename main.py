@@ -730,6 +730,7 @@ def naturalJoinNames(names):
         return names[0]
     return ", ".join(names[:-1]) + " and " + names[-1]
 
+
 def getWaifuRepresentationString(waifuid, baserarity=None, cardrarity=None, waifuname=None):
     if baserarity == None or cardrarity == None or waifuname == None:
         waifuData = getWaifuById(waifuid)
@@ -747,6 +748,7 @@ def getWaifuRepresentationString(waifuid, baserarity=None, cardrarity=None, waif
         waifuid, config["rarity" + str(cardrarity) + "Name"], promoteStars, waifuname)
 
     return retStr
+
 
 def sendSetAlert(channel, user, name, waifus, points, discord=True):
     logger.info("Alerting for set claim %s", name)
@@ -774,7 +776,8 @@ def sendSetAlert(channel, user, name, waifus, points, discord=True):
         {
             "type": "rich",
             "title": "{user} completed the set {name}!".format(user=str(user), name=name),
-            "description": "They gathered {waifus} and received {points} points as their reward.".format(waifus=naturalJoinNames(waifus), points=str(points)),
+            "description": "They gathered {waifus} and received {points} points as their reward.".format(
+                waifus=naturalJoinNames(waifus), points=str(points)),
             "url": "https://twitch.tv/{name}".format(name=str(channel).replace("#", "").lower()),
             "color": int(config["rarity" + str(int(config["numNormalRarities"]) - 1) + "EmbedColor"]),
             "footer": {
@@ -821,7 +824,8 @@ def getWaifuById(id):
     cur.close()
     # print("Fetched Waifu from id: " + str(ret))
     return ret
-    
+
+
 def getWaifuOwners(id, rarity):
     with db.cursor() as cur:
         baseRarityName = config["rarity%dName" % rarity]
@@ -848,7 +852,7 @@ def getWaifuOwners(id, rarity):
             ownerDescriptions.append(owner + " (" + ", ".join(ownerData[owner]) + ")")
         else:
             ownerDescriptions.append(owner)
-            
+
     return ownerDescriptions
 
 
@@ -1914,16 +1918,30 @@ class NepBot(NepBotClass):
             self.message(source, "Bad Bot. No. (account banned from playing TCG)", isWhisper)
             return
 
-    def message(self, channel, message, isWhisper=False):
-        logger.debug("sending message %s %s %s" % (channel, message, "Y" if isWhisper else "N"))
-        if isWhisper:
+    def message(self, channel, message, isWhisper=False, isExtension=False, extensionJWT=None, extensionTarget=None,
+                success=False, extensionAction='general'):
+        logger.debug(
+            "sending message %s %s %s" % (channel, message, "Y" if isWhisper else ("E" if isExtension else "N")))
+
+        if isExtension:
+            data = {'content_type': 'application/json',
+                    'message': json.dumps({'botmsg': message, 'success': success, 'action': extensionAction}),
+                    'targets': [extensionTarget]}
+            url = "https://api.twitch.tv/extensions/message/all"
+            response = requests.post(
+                url,
+                json=data, headers={'Authorization': 'Bearer ' + extensionJWT})
+            if response.status_code != 204:
+                logger.warn('Error Sending PubSub response. Silently failing. Response: %s' % response)
+        elif isWhisper:
             super().message("#jtv", "/w " + str(channel).replace("#", "") + " " + str(message))
         elif not silence:
             super().message(channel, message)
         else:
             logger.debug("Message not sent as not Whisper and Silent Mode enabled")
 
-    def do_command(self, command, args, sender, channel, tags, isWhisper=False):
+    def do_command(self, command, args, sender, channel, tags, isWhisper=False, isExtension=False, extensionJWT=None,
+                   extensionTarget=None):
         logger.debug("Got command: %s with arguments %s", command, str(args))
         isMarathonChannel = channel == config['marathonChannel'] and not isWhisper
         if command == "as" and debugMode and sender in superadmins:
@@ -2024,7 +2042,9 @@ class NepBot(NepBotClass):
                         self.message(channel,
                                      str(tags[
                                              'display-name']) + ", you need to wait {0} for your next free drop!".format(
-                                         datestring), isWhisper=isWhisper)
+                                         datestring), isWhisper=isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                     extensionAction='freebie')
                         return
 
                     storeInPack = False
@@ -2036,13 +2056,17 @@ class NepBot(NepBotClass):
                         if bct > 0:
                             self.message(channel,
                                          "%s, you can't use !freewaifu pack while you have an open booster! You might be able to use !freewaifu instead." %
-                                         tags['display-name'], isWhisper)
+                                         tags['display-name'], isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                         extensionAction='freebie')
                             return
                         storeInPack = True
                     elif currentCards(tags['user-id']) >= handLimit(tags['user-id']):
                         self.message(channel,
                                      "%s, your hand is full! Disenchant something, !upgrade your hand or use !freewaifu pack instead." %
-                                     tags['display-name'], isWhisper)
+                                     tags['display-name'], isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                     extensionAction='freebie')
                         return
 
                     # good to get freewaifu
@@ -2073,11 +2097,14 @@ class NepBot(NepBotClass):
                     cur.execute("UPDATE users SET lastFree = %s WHERE id = %s", [current_milli_time(), tags['user-id']])
                     self.message(channel,
                                  "{username}, you dropped a new waifu: [{id}][{rarity}] {name} from {series} - {link}{pack}".format(
-                                     **msgArgs), isWhisper)
+                                     **msgArgs), isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=True, extensionAction='freebie')
                     return
             if command == "disenchant" or command == "de":
                 if len(args) == 0 or (len(args) == 1 and len(args[0]) == 0):
-                    self.message(channel, "Usage: !disenchant <list of IDs>", isWhisper=isWhisper)
+                    self.message(channel, "Usage: !disenchant <list of IDs>", isWhisper=isWhisper,
+                                 isExtension=isExtension, extensionJWT=extensionJWT, extensionTarget=extensionTarget,
+                                 success=False, extensionAction='disenchant')
                     return
 
                 # check for confirmation
@@ -2095,24 +2122,32 @@ class NepBot(NepBotClass):
                     try:
                         deTarget = parseHandCardSpecifier(hand, arg)
                         if deTarget in disenchants:
-                            self.message(channel, "You can't disenchant the same waifu twice at once!", isWhisper)
+                            self.message(channel, "You can't disenchant the same waifu twice at once!", isWhisper,
+                                         isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='disenchant')
                             return
                         if deTarget['rarity'] >= int(config["numNormalRarities"]) and not hasConfirmed:
                             self.message(channel,
                                          "%s, you are trying to disenchant one or more special waifus! Special waifus do not take up any hand space and disenchant for 0 points. If you are sure you want to do this, append \" yes\" to the end of your command." %
-                                         tags['display-name'], isWhisper)
+                                         tags['display-name'], isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                         extensionAction='disenchant')
                             return
                         if deTarget['rarity'] >= int(
                                 config["disenchantRequireConfirmationRarity"]) and not hasConfirmed:
                             confirmRarityName = config["rarity%sName" % config["disenchantRequireConfirmationRarity"]]
                             self.message(channel,
                                          "%s, you are trying to disenchant one or more waifus of %s rarity or higher! If you are sure you want to do this, append \" yes\" to the end of your command." % (
-                                             tags['display-name'], confirmRarityName), isWhisper)
+                                             tags['display-name'], confirmRarityName), isWhisper,
+                                         isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='disenchant')
                             return
                         if deTarget['rarity'] != deTarget['base_rarity'] and not hasConfirmed:
                             self.message(channel,
                                          "%s, you are trying to disenchant one or more promoted waifus! If you are sure you want to do this, append \" yes\" to the end of your command." %
-                                         tags['display-name'], isWhisper)
+                                         tags['display-name'], isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                         extensionAction='disenchant')
                             return
                         disenchants.append(deTarget)
                     except CardNotInHandException:
@@ -2120,20 +2155,25 @@ class NepBot(NepBotClass):
                     except AmbiguousRarityException:
                         self.message(channel,
                                      "You have more than one rarity of waifu %s in your hand. Please specify a rarity as well by appending a hyphen and then the rarity e.g. !disenchant %s-god" % (
-                                         arg, arg), isWhisper)
+                                         arg, arg), isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='disenchant')
                         return
                     except ValueError:
                         self.message(channel, "Could not decipher one or more of the waifu IDs you provided.",
-                                     isWhisper)
+                                     isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='disenchant')
                         return
 
                 if len(dontHave) > 0:
                     if len(dontHave) == 1:
-                        self.message(channel, "You don't own waifu %s." % dontHave[0], isWhisper)
+                        self.message(channel, "You don't own waifu %s." % dontHave[0], isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='disenchant')
                     else:
                         self.message(channel,
                                      "You don't own the following waifus: %s" % ", ".join([id for id in dontHave]),
-                                     isWhisper)
+                                     isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='disenchant')
                     return
 
                 # handle disenchants appropriately
@@ -2163,13 +2203,16 @@ class NepBot(NepBotClass):
                 if len(disenchants) == 1:
                     buytext = " (bounty filled)" if ordersFilled > 0 else ""
                     self.message(channel, "Successfully disenchanted waifu %d%s. %s gained %d points" % (
-                        disenchants[0]['id'], buytext, str(tags['display-name']), pointsGain), isWhisper=isWhisper)
+                        disenchants[0]['id'], buytext, str(tags['display-name']), pointsGain), isWhisper=isWhisper,
+                                 isExtension=isExtension, extensionJWT=extensionJWT, extensionTarget=extensionTarget,
+                                 success=True, extensionAction='disenchant')
                 else:
                     buytext = " (%d bounties filled)" % ordersFilled if ordersFilled > 0 else ""
                     self.message(channel,
                                  "Successfully disenchanted %d waifus%s. Added %d points to %s's account" % (
                                      len(disenchants), buytext, pointsGain, str(tags['display-name'])),
-                                 isWhisper=isWhisper)
+                                 isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=True, extensionAction='disenchant')
 
                 return
             if command == "giveme":
@@ -2178,30 +2221,39 @@ class NepBot(NepBotClass):
             if command == "buy":
                 if len(args) != 1:
                     if len(args) > 0 and args[0].lower() == "booster":
-                        self.message(channel, "%s, did you mean !booster buy?" % tags['display-name'], isWhisper)
+                        self.message(channel, "%s, did you mean !booster buy?" % tags['display-name'], isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='buy')
                     else:
                         self.message(channel, "Usage: !buy <rarity> (So !buy uncommon for an uncommon)",
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='buy')
                     return
                 if currentCards(tags['user-id']) >= handLimit(tags['user-id']):
                     self.message(channel,
                                  "{sender}, you have too many cards to buy one! !disenchant some or upgrade your hand!".format(
-                                     sender=str(tags['display-name'])), isWhisper=isWhisper)
+                                     sender=str(tags['display-name'])), isWhisper=isWhisper, isExtension=isExtension,
+                                 extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                 extensionAction='buy')
                     return
                 try:
                     rarity = parseRarity(args[0])
                 except Exception:
                     self.message(channel, "Unknown rarity. Usage: !buy <rarity> (So !buy uncommon for an uncommon)",
-                                 isWhisper=isWhisper)
+                                 isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=False, extensionAction='buy')
                     return
                 if rarity >= int(config["numNormalRarities"]) or int(config["rarity" + str(rarity) + "Max"]) == 1:
-                    self.message(channel, "You can't buy that rarity of waifu.", isWhisper=isWhisper)
+                    self.message(channel, "You can't buy that rarity of waifu.", isWhisper=isWhisper,
+                                 isExtension=isExtension, extensionJWT=extensionJWT, extensionTarget=extensionTarget,
+                                 success=False, extensionAction='buy')
                     return
                 price = int(config["rarity" + str(rarity) + "Value"]) * 5
                 if not hasPoints(tags['user-id'], price):
                     self.message(channel, "You do not have enough points to buy a " + str(
                         config["rarity" + str(rarity) + "Name"]) + " waifu. You need " + str(price) + " points.",
-                                 isWhisper=isWhisper)
+                                 isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=False, extensionAction='buy')
                     return
                 chosenWaifu = dropCard(rarity=rarity, allowDowngrades=False,
                                        bannedCards=getUniqueCards(tags['user-id']))
@@ -2213,7 +2265,9 @@ class NepBot(NepBotClass):
                             'display-name']) + ', you bought a new Waifu for {price} points: [{id}][{rarity}] {name} from {series} - {link}'.format(
                         id=str(row['id']), rarity=config["rarity" + str(row['base_rarity']) + "Name"], name=row['name'],
                         series=row['series'],
-                        link=row['image'], price=str(price)), isWhisper=isWhisper)
+                        link=row['image'], price=str(price)), isWhisper=isWhisper, isExtension=isExtension,
+                                 extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=True,
+                                 extensionAction='buy')
                     recordPullMetrics(row['id'])
                     giveCard(tags['user-id'], row['id'], row['base_rarity'])
                     logDrop(str(tags['user-id']), row['id'], rarity, "buy", channel, isWhisper)
@@ -2223,13 +2277,15 @@ class NepBot(NepBotClass):
                     return
                 else:
                     self.message(channel, "You can't buy a %s waifu right now. Try again later." % config[
-                        "rarity" + str(rarity) + "Name"], isWhisper)
+                        "rarity" + str(rarity) + "Name"], isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=False, extensionAction='buy')
                     return
             if command == "booster":
                 if len(args) < 1:
                     self.message(channel,
                                  "Usage: !booster buy <%s> OR !booster select <take/disenchant> (for each waifu) OR !booster show" % visiblepacks,
-                                 isWhisper=isWhisper)
+                                 isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=False, extensionAction='booster')
                     return
 
                 # check for confirmation
@@ -2251,7 +2307,8 @@ class NepBot(NepBotClass):
                 if (cmd == "show" or cmd == "select") and boosterinfo is None:
                     self.message(channel, tags[
                         'display-name'] + ", you do not have an open booster. Buy one using !booster buy <%s>" % visiblepacks,
-                                 isWhisper=isWhisper)
+                                 isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=False, extensionAction='booster')
                     cur.close()
                     return
 
@@ -2262,7 +2319,9 @@ class NepBot(NepBotClass):
                     else:
                         droplink = config["siteHost"] + "/booster?user=" + sender
                         self.message(channel, "{user}, your current open booster pack: {droplink}".format(
-                            user=tags['display-name'], droplink=droplink), isWhisper=isWhisper)
+                            user=tags['display-name'], droplink=droplink), isWhisper=isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                     extensionAction='booster')
                     cur.close()
                     return
 
@@ -2280,7 +2339,9 @@ class NepBot(NepBotClass):
                                 if letter != 'd' and letter != 'k':
                                     self.message(channel,
                                                  "When using shorthand booster syntax, please only use the letters d and k.",
-                                                 isWhisper=isWhisper)
+                                                 isWhisper=isWhisper, isExtension=isExtension,
+                                                 extensionJWT=extensionJWT, extensionTarget=extensionTarget,
+                                                 success=False, extensionAction='booster')
                                     cur.close()
                                     return
                                 elif letter == 'd':
@@ -2292,7 +2353,8 @@ class NepBot(NepBotClass):
 
                     if len(selectArgs) != len(cards):
                         self.message(channel, "You did not specify the correct amount of keep/disenchant.",
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='booster')
                         cur.close()
                         return
 
@@ -2300,7 +2362,8 @@ class NepBot(NepBotClass):
                         if not (arg.lower() == "keep" or arg.lower() == "disenchant"):
                             self.message(channel,
                                          "Sorry, but " + arg.lower() + " is not a valid option. Use keep or disenchant",
-                                         isWhisper=isWhisper)
+                                         isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='booster')
                             cur.close()
                             return
 
@@ -2322,12 +2385,16 @@ class NepBot(NepBotClass):
                                     "rarity%sName" % config["disenchantRequireConfirmationRarity"]]
                                 self.message(channel,
                                              "%s, you are trying to disenchant one or more waifus of %s rarity or higher! If you are sure you want to do this, append \" yes\" to the end of your command." % (
-                                                 tags['display-name'], confirmRarityName), isWhisper)
+                                                 tags['display-name'], confirmRarityName), isWhisper,
+                                             isExtension=isExtension, extensionJWT=extensionJWT,
+                                             extensionTarget=extensionTarget, success=False, extensionAction='booster')
                                 return
                             deCards.append(waifu)
 
                     if keepingCount + currentCards(tags['user-id']) > handLimit(tags['user-id']) and keepingCount != 0:
-                        self.message(channel, "You can't keep that many waifus! !disenchant some!", isWhisper=isWhisper)
+                        self.message(channel, "You can't keep that many waifus! !disenchant some!", isWhisper=isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='booster')
                         cur.close()
                         return
                     trash = (keepingCount == 0)
@@ -2350,7 +2417,7 @@ class NepBot(NepBotClass):
                     attemptPromotions(*cards)
 
                     # compile the message to be sent in chat
-                    response = "You %s your booster pack%s" % (("trash", "") if trash else ("take"," and: "))
+                    response = "You %s your booster pack%s" % (("trash", "") if trash else ("take", " and: "))
 
                     if len(keepCards) > 0:
                         response += " keep " + ', '.join(str(x['id']) for x in keepCards) + ";"
@@ -2362,8 +2429,10 @@ class NepBot(NepBotClass):
                     elif len(deCards) > 0:
                         response += ";"
 
-                    self.message(channel, response + ((" netting " + str(gottenpoints) + " points.") if gottenpoints>0 else ""),
-                                 isWhisper=isWhisper)
+                    self.message(channel, response + (
+                        (" netting " + str(gottenpoints) + " points.") if gottenpoints > 0 else ""),
+                                 isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=True, extensionAction='booster')
                     cur.execute("UPDATE boosters_opened SET status = 'closed', updated = %s WHERE id = %s",
                                 [current_milli_time(), boosterinfo[0]])
                     cur.close()
@@ -2372,7 +2441,8 @@ class NepBot(NepBotClass):
                     if boosterinfo is not None:
                         self.message(channel,
                                      "You already have an open booster. Close it first!",
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='booster')
                         cur.close()
                         return
                     if len(args) < 2:
@@ -2388,15 +2458,19 @@ class NepBot(NepBotClass):
 
                         droplink = config["siteHost"] + "/booster?user=" + sender
                         self.message(channel, "{user}, you open a {type} booster: {droplink}".format(
-                            user=tags['display-name'], type=packname, droplink=droplink), isWhisper=isWhisper)
+                            user=tags['display-name'], type=packname, droplink=droplink), isWhisper=isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='booster')
                     except InvalidBoosterException:
                         self.message(channel, "Invalid booster type. Packs available right now: %s." % visiblepacks,
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='booster')
                     except CantAffordBoosterException as exc:
                         self.message(channel,
                                      "{user}, you don't have enough points for a {name} pack. You need {points}.".format(
                                          user=tags['display-name'], name=packname, points=exc.cost),
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='booster')
 
                     cur.close()
                     return
@@ -2420,7 +2494,9 @@ class NepBot(NepBotClass):
                         cur.execute("SELECT id FROM users WHERE name = %s", [otherparty])
                         otheridrow = cur.fetchone()
                         if otheridrow is None:
-                            self.message(channel, "I don't recognize that username.", isWhisper=isWhisper)
+                            self.message(channel, "I don't recognize that username.", isWhisper=isWhisper,
+                                         isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='trade')
                             return
                         otherid = int(otheridrow[0])
 
@@ -2433,7 +2509,8 @@ class NepBot(NepBotClass):
                         if trade is None:
                             self.message(channel,
                                          otherparty + " did not send you a trade. Send one with !trade " + otherparty + " <have> <want> [points]",
-                                         isWhisper=isWhisper)
+                                         isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='trade')
                             return
 
                         want = trade[1]
@@ -2467,7 +2544,9 @@ class NepBot(NepBotClass):
                         elif subarg == "decline":
                             cur.execute("UPDATE trades SET status = 'declined', updated = %s WHERE id = %s",
                                         [current_milli_time(), trade[0]])
-                            self.message(channel, "Trade declined.", isWhisper=isWhisper)
+                            self.message(channel, "Trade declined.", isWhisper=isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=True,
+                                         extensionAction='trade')
                             return
                         else:
                             # accept
@@ -2480,13 +2559,17 @@ class NepBot(NepBotClass):
                             except CardRarityNotInHandException:
                                 self.message(channel,
                                              "%s, the rarity of waifu %d in your hand has changed! Trade cancelled." % (
-                                                 tags['display-name'], want), isWhisper)
+                                                 tags['display-name'], want), isWhisper, isExtension=isExtension,
+                                             extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                             extensionAction='trade')
                                 cur.execute("UPDATE trades SET status = 'invalid', updated = %s WHERE id = %s",
                                             [current_milli_time(), trade[0]])
                                 return
                             except CardNotInHandException:
                                 self.message(channel, "%s, you no longer own waifu %d! Trade cancelled." % (
-                                    tags['display-name'], want), isWhisper)
+                                    tags['display-name'], want), isWhisper, isExtension=isExtension,
+                                             extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                             extensionAction='trade')
                                 cur.execute("UPDATE trades SET status = 'invalid', updated = %s WHERE id = %s",
                                             [current_milli_time(), trade[0]])
                                 return
@@ -2496,13 +2579,17 @@ class NepBot(NepBotClass):
                             except CardRarityNotInHandException:
                                 self.message(channel,
                                              "%s, the rarity of %s's copy of waifu %d has changed! Trade cancelled." % (
-                                                 tags['display-name'], otherparty, have), isWhisper)
+                                                 tags['display-name'], otherparty, have), isWhisper,
+                                             isExtension=isExtension, extensionJWT=extensionJWT,
+                                             extensionTarget=extensionTarget, success=False, extensionAction='trade')
                                 cur.execute("UPDATE trades SET status = 'invalid', updated = %s WHERE id = %s",
                                             [current_milli_time(), trade[0]])
                                 return
                             except CardNotInHandException:
                                 self.message(channel, "%s, %s no longer owns waifu %d! Trade cancelled." % (
-                                    tags['display-name'], otherparty, have), isWhisper)
+                                    tags['display-name'], otherparty, have), isWhisper, isExtension=isExtension,
+                                             extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                             extensionAction='trade')
                                 cur.execute("UPDATE trades SET status = 'invalid', updated = %s WHERE id = %s",
                                             [current_milli_time(), trade[0]])
                                 return
@@ -2514,12 +2601,15 @@ class NepBot(NepBotClass):
                             if not hasPoints(payup, cost + tradepoints):
                                 self.message(channel, "Sorry, but %s cannot cover the %s trading fee." % (
                                     "you" if payup == ourid else otherparty, "fair" if tradepoints > 0 else "base"),
-                                             isWhisper=isWhisper)
+                                             isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                             extensionTarget=extensionTarget, success=False, extensionAction='trade')
                                 return
 
                             if not hasPoints(nonpayer, cost - tradepoints):
                                 self.message(channel, "Sorry, but %s cannot cover the base trading fee." % (
-                                    "you" if nonpayer == ourid else otherparty), isWhisper=isWhisper)
+                                    "you" if nonpayer == ourid else otherparty), isWhisper=isWhisper,
+                                             isExtension=isExtension, extensionJWT=extensionJWT,
+                                             extensionTarget=extensionTarget, success=False, extensionAction='trade')
                                 return
 
                             # take cards
@@ -2540,7 +2630,9 @@ class NepBot(NepBotClass):
                             cur.execute("UPDATE trades SET status = 'accepted', updated = %s WHERE id = %s",
                                         [current_milli_time(), trade[0]])
 
-                            self.message(channel, "Trade executed!", isWhisper=isWhisper)
+                            self.message(channel, "Trade executed!", isWhisper=isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=True,
+                                         extensionAction='trade')
                             return
 
                     if len(args) not in [3, 4]:
@@ -2554,7 +2646,9 @@ class NepBot(NepBotClass):
                     cur.execute("SELECT id FROM users WHERE name = %s", [other])
                     otheridrow = cur.fetchone()
                     if otheridrow is None:
-                        self.message(channel, "I don't recognize that username.", isWhisper=isWhisper)
+                        self.message(channel, "I don't recognize that username.", isWhisper=isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='trade')
                         return
 
                     otherid = int(otheridrow[0])
@@ -2565,18 +2659,25 @@ class NepBot(NepBotClass):
                         have = parseHandCardSpecifier(ourhand, args[1])
                     except CardRarityNotInHandException:
                         self.message(channel, "%s, you don't own that waifu at that rarity!" % tags['display-name'],
-                                     isWhisper)
+                                     isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='trade')
                         return
                     except CardNotInHandException:
-                        self.message(channel, "%s, you don't own that waifu!" % tags['display-name'], isWhisper)
+                        self.message(channel, "%s, you don't own that waifu!" % tags['display-name'], isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='trade')
                         return
                     except AmbiguousRarityException:
                         self.message(channel,
                                      "%s, you own more than one rarity of waifu %s! Please specify a rarity as well by appending a hyphen and then the rarity, e.g. %s-god" % (
-                                         tags['display-name'], args[1], args[1]), isWhisper)
+                                         tags['display-name'], args[1], args[1]), isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                     extensionAction='trade')
                         return
                     except ValueError:
-                        self.message(channel, "Only whole numbers/IDs + rarities please.", isWhisper)
+                        self.message(channel, "Only whole numbers/IDs + rarities please.", isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='trade')
                         return
 
                     try:
@@ -2584,19 +2685,25 @@ class NepBot(NepBotClass):
                     except CardRarityNotInHandException:
                         self.message(channel,
                                      "%s, %s doesn't own that waifu at that rarity!" % (tags['display-name'], other),
-                                     isWhisper)
+                                     isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='trade')
                         return
                     except CardNotInHandException:
                         self.message(channel, "%s, %s doesn't own that waifu!" % (tags['display-name'], other),
-                                     isWhisper)
+                                     isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='trade')
                         return
                     except AmbiguousRarityException:
                         self.message(channel,
                                      "%s, %s owns more than one rarity of waifu %s! Please specify a rarity as well by appending a hyphen and then the rarity, e.g. %s-god" % (
-                                         tags['display-name'], other, args[2], args[2]), isWhisper)
+                                         tags['display-name'], other, args[2], args[2]), isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='trade')
                         return
                     except ValueError:
-                        self.message(channel, "Only whole numbers/IDs + rarities please.", isWhisper)
+                        self.message(channel, "Only whole numbers/IDs + rarities please.", isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='trade')
                         return
 
                     points = 0
@@ -2604,7 +2711,9 @@ class NepBot(NepBotClass):
                         try:
                             points = int(args[3])
                         except ValueError:
-                            self.message(channel, "Only whole numbers/IDs + rarities please.", isWhisper)
+                            self.message(channel, "Only whole numbers/IDs + rarities please.", isWhisper,
+                                         isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='trade')
                             return
 
                     payup = ourid
@@ -2615,12 +2724,14 @@ class NepBot(NepBotClass):
                         if have["rarity"] >= firstSpecialRarity or want["rarity"] >= firstSpecialRarity:
                             self.message(channel,
                                          "Sorry, special-rarity cards can only be traded for other special-rarity cards.",
-                                         isWhisper=isWhisper)
+                                         isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='trade')
                             return
                         if len(args) != 4:
                             self.message(channel,
                                          "To trade waifus of different rarities, please append a point value the owner of the lower tier card has to pay to the command to make the trade fair. (see !help)",
-                                         isWhisper=isWhisper)
+                                         isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='trade')
                             return
                         highercost = int(config["rarity" + str(max(have["rarity"], want["rarity"])) + "Value"])
                         lowercost = int(config["rarity" + str(min(have["rarity"], want["rarity"])) + "Value"])
@@ -2629,17 +2740,21 @@ class NepBot(NepBotClass):
                         maxi = int(costdiff)
                         if points < mini:
                             self.message(channel, "Minimum points to trade this difference in rarity is " + str(mini),
-                                         isWhisper=isWhisper)
+                                         isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='trade')
                             return
                         if points > maxi:
                             self.message(channel, "Maximum points to trade this difference in rarity is " + str(maxi),
-                                         isWhisper=isWhisper)
+                                         isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='trade')
                             return
                         if want["rarity"] < have["rarity"]:
                             payup = otherid
 
                     elif points > 0:
-                        self.message(channel, "You cannot attach points on same-rarity trades.", isWhisper)
+                        self.message(channel, "You cannot attach points on same-rarity trades.", isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='trade')
                         return
 
                     # cancel any old trades with this pairing
@@ -2673,11 +2788,14 @@ class NepBot(NepBotClass):
                                                                                                         have=haveStr,
                                                                                                         want=wantStr,
                                                                                                         paying=paying),
-                                 isWhisper=isWhisper)
+                                 isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=True, extensionAction='trade')
                     return
             if command == "lookup":
                 if len(args) != 1:
-                    self.message(channel, "Usage: !lookup <id>", isWhisper=isWhisper)
+                    self.message(channel, "Usage: !lookup <id>", isWhisper=isWhisper, isExtension=isExtension,
+                                 extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                 extensionAction='lookup')
                     return
 
                 if infoCommandAvailable(tags['user-id'], sender, tags['display-name'], self, channel, isWhisper):
@@ -2755,17 +2873,22 @@ class NepBot(NepBotClass):
                         self.message(channel,
                                      '[{id}][{rarity}] {name} from {series} - {image}{owned}. {bountyinfo}{lp}'.format(
                                          **waifu),
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='lookup')
 
                         if sender not in superadmins:
                             useInfoCommand(tags['user-id'], sender, channel, isWhisper)
                     except Exception as exc:
-                        self.message(channel, "Invalid waifu ID.", isWhisper=isWhisper)
+                        self.message(channel, "Invalid waifu ID.", isWhisper=isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                     extensionAction='lookup')
 
                 return
             if command == "owners":
                 if len(args) != 1:
-                    self.message(channel, "Usage: !owners <id>", isWhisper=isWhisper)
+                    self.message(channel, "Usage: !owners <id>", isWhisper=isWhisper, isExtension=isExtension,
+                                 extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                 extensionAction='owners')
                     return
 
                 if infoCommandAvailable(tags['user-id'], sender, tags['display-name'], self, channel, isWhisper):
@@ -2798,12 +2921,15 @@ class NepBot(NepBotClass):
                         self.message(channel,
                                      '[{id}][{rarity}] {name} from {series}{owned}.'.format(
                                          **waifu),
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=True, extensionAction='owners')
 
                         if sender not in superadmins:
                             useInfoCommand(tags['user-id'], sender, channel, isWhisper)
                     except Exception:
-                        self.message(channel, "Invalid waifu ID.", isWhisper=isWhisper)
+                        self.message(channel, "Invalid waifu ID.", isWhisper=isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                     extensionAction='owners')
 
                 return
             if command == "whisper":
@@ -2820,7 +2946,8 @@ class NepBot(NepBotClass):
                 if len(args) < 1:
                     self.message(channel,
                                  "Usage: !alerts setup OR !alerts test <rarity/set> OR !alerts config <config Name> <config Value>",
-                                 isWhisper=isWhisper)
+                                 isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=False, extensionAction='alerts')
                     return
                 sender = sender.lower()
                 subcmd = str(args[0]).lower()
@@ -2831,7 +2958,8 @@ class NepBot(NepBotClass):
                     if row is None:
                         self.message(channel,
                                      "The bot is not in your channel, so alerts can't be set up for you. Ask an admin to let it join!",
-                                     iswhisper=isWhisper)
+                                     iswhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='alerts')
                         return
                     if row[0] is None:
                         self.message("#jtv",
@@ -2839,11 +2967,13 @@ class NepBot(NepBotClass):
                                          user=sender.strip(), link=str(streamlabsauthurl).strip()), isWhisper=False)
                         self.message(channel,
                                      "Sent you a whisper with a link to set up alerts. If you didnt receive a whisper, try !whisper",
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=True, extensionAction='alerts')
                     else:
                         self.message(channel,
                                      "Alerts seem to already be set up for your channel! Use !alerts test to test them!",
-                                     isWhisper)
+                                     isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='alerts')
                     cur.close()
                     return
                 if subcmd == "test":
@@ -2863,7 +2993,8 @@ class NepBot(NepBotClass):
                     if row is None or row[0] is None:
                         self.message(channel,
                                      "Alerts do not seem to be set up for your channel, please set them up using !alerts setup",
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='alerts')
                     else:
                         if isSet:
                             threading.Thread(target=sendSetAlert, args=(
@@ -2874,25 +3005,30 @@ class NepBot(NepBotClass):
                                 sender, {"name": "Test Alert, please ignore", "base_rarity": rarity,
                                          "image": "http://t.fuelr.at/k6g"},
                                 str(tags["display-name"]), False)).start()
-                        self.message(channel, "Test Alert sent.", isWhisper=isWhisper)
+                        self.message(channel, "Test Alert sent.", isWhisper=isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=True,
+                                     extensionAction='alerts')
                     return
                 if subcmd == "config":
                     try:
                         configName = args[1]
                     except Exception:
                         self.message(channel, "Valid alert config options: " + ", ".join(validalertconfigvalues),
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='alerts')
                         return
                     if configName == "reset":
                         cur = db.cursor()
                         cur.execute("DELETE FROM alertConfig WHERE channelName = %s", [sender])
                         cur.close()
                         self.message(channel, "Removed all custom alert config for your channel. #NoireScreamRules",
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=True, extensionAction='alerts')
                         return
                     if configName not in validalertconfigvalues:
                         self.message(channel, "Valid alert config options: " + ", ".join(validalertconfigvalues),
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='alerts')
                         return
                     try:
                         configValue = args[2]
@@ -2903,12 +3039,14 @@ class NepBot(NepBotClass):
                         rows = cur.fetchall()
                         if len(rows) != 1:
                             self.message(channel, 'Alert config "' + configName + '" is unset for your channel.',
-                                         isWhisper=isWhisper)
+                                         isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=True, extensionAction='alerts')
                         else:
                             configValue = rows[0][0]
                             self.message(channel,
                                          'Alert config "' + configName + '" is set to "' + configValue + '" for your channel.',
-                                         isWhisper=isWhisper)
+                                         isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=True, extensionAction='alerts')
                         cur.close()
                         return
                     cur = db.cursor()
@@ -2919,12 +3057,15 @@ class NepBot(NepBotClass):
                         cur.execute("DELETE FROM alertConfig WHERE channelName=%s AND config=%s", [sender, configName])
                         cur.close()
                         self.message(channel, 'Reset custom alert config "' + configName + '" for your channel.',
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=True, extensionAction='alerts')
                         return
                     if configName == "alertChannel" and configValue not in ["host", "donation", "follow", "reset",
                                                                             "subscription"]:
                         self.message(channel,
-                                     'Valid options for alertChannel: "host", "donation", "follow", "subscription", "reset"')
+                                     'Valid options for alertChannel: "host", "donation", "follow", "subscription", "reset"',
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='alerts')
                         cur.close()
                         return
                     if len(rows) == 1:
@@ -2935,11 +3076,13 @@ class NepBot(NepBotClass):
                                     [configValue, sender, configName])
                     cur.close()
                     self.message(channel, 'Set alert config value "' + configName + '" to "' + configValue + '"',
-                                 isWhisper=isWhisper)
+                                 isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=True, extensionAction='alerts')
                     return
                 self.message(channel,
                              "Usage: !alerts setup OR !alerts test <rarity> OR !alerts config <config Name> <config Value>",
-                             isWhisper=isWhisper)
+                             isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                             extensionTarget=extensionTarget, success=False, extensionAction='alerts')
                 return
             if command == "togglehoraro" and sender in admins:
                 self.autoupdate = not self.autoupdate
@@ -3023,7 +3166,9 @@ class NepBot(NepBotClass):
                 return
             if command == "redeem":
                 if len(args) != 1:
-                    self.message(channel, "Usage: !redeem <token>", isWhisper=isWhisper)
+                    self.message(channel, "Usage: !redeem <token>", isWhisper=isWhisper, isExtension=isExtension,
+                                 extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                 extensionAction='redeem')
                     return
 
                 cur = db.cursor()
@@ -3035,13 +3180,16 @@ class NepBot(NepBotClass):
                 redeemablerows = cur.fetchall()
 
                 if len(redeemablerows) == 0:
-                    self.message(channel, "Unknown token.", isWhisper)
+                    self.message(channel, "Unknown token.", isWhisper, isExtension=isExtension,
+                                 extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                 extensionAction='redeem')
                     cur.close()
                     return
 
                 if len(redeemablerows) > 1:
                     self.message(channel, "Go tell an admin that token %s is broken (duplicate token name)." % args[0],
-                                 isWhisper)
+                                 isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=False, extensionAction='redeem')
                     cur.close()
                     return
 
@@ -3053,7 +3201,9 @@ class NepBot(NepBotClass):
                 claimed = cur.fetchone()[0] or 0
 
                 if claimed > 0:
-                    self.message(channel, "%s, you have already claimed this token!" % tags['display-name'], isWhisper)
+                    self.message(channel, "%s, you have already claimed this token!" % tags['display-name'], isWhisper,
+                                 isExtension=isExtension, extensionJWT=extensionJWT, extensionTarget=extensionTarget,
+                                 success=False, extensionAction='redeem')
                     cur.close()
                     return
 
@@ -3070,7 +3220,9 @@ class NepBot(NepBotClass):
                     if boosteropen > 0:
                         self.message(channel,
                                      "%s, you can't claim this token while you have an open booster! !booster show to check it." %
-                                     tags['display-name'], isWhisper)
+                                     tags['display-name'], isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                     extensionAction='redeem')
                         cur.close()
                         return
 
@@ -3083,7 +3235,8 @@ class NepBot(NepBotClass):
                     except InvalidBoosterException:
                         self.message(channel,
                                      "Go tell an admin that token %s is broken (invalid booster attached)." % args[0],
-                                     isWhisper)
+                                     isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='redeem')
                         cur.close()
                         return
 
@@ -3122,7 +3275,9 @@ class NepBot(NepBotClass):
                 # show results
                 self.message(channel,
                              "%s -> Successfully redeemed the token %s, added the following to your account -> %s" % (
-                                 tags['display-name'], args[0], " and ".join(received[::-1])), isWhisper)
+                                 tags['display-name'], args[0], " and ".join(received[::-1])), isWhisper,
+                             isExtension=isExtension, extensionJWT=extensionJWT, extensionTarget=extensionTarget,
+                             success=True, extensionAction='redeem')
                 cur.close()
                 return
             if command == "wars":
@@ -3453,7 +3608,9 @@ class NepBot(NepBotClass):
                 return
             if command == "search":
                 if len(args) < 1:
-                    self.message(channel, "Usage: !search <name>[ from <series>]", isWhisper=isWhisper)
+                    self.message(channel, "Usage: !search <name>[ from <series>]", isWhisper=isWhisper,
+                                 isExtension=isExtension, extensionJWT=extensionJWT, extensionTarget=extensionTarget,
+                                 success=False, extensionAction='search')
                     return
                 if infoCommandAvailable(tags['user-id'], sender, tags['display-name'], self, channel, isWhisper):
                     try:
@@ -3465,22 +3622,29 @@ class NepBot(NepBotClass):
                         series = None
                     result = search(q, series)
                     if len(result) == 0:
-                        self.message(channel, "No waifu found with that name.", isWhisper=isWhisper)
+                        self.message(channel, "No waifu found with that name.", isWhisper=isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='search')
                         return
 
                     if len(result) > 8:
                         self.message(channel, "Too many results! ({amount}) - try a longer search query.".format(
-                            amount=str(len(result))), isWhisper=isWhisper)
+                            amount=str(len(result))), isWhisper=isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                     extensionAction='search')
                         return
 
                     if len(result) == 1:
                         self.message(channel,
                                      "Found one waifu: [{w[id]}][{rarity}]{w[name]} from {w[series]} (use !lookup {w[id]} for more info)".format(
                                          w=result[0], rarity=config['rarity' + str(result[0]['base_rarity']) + 'Name']),
-                                     isWhisper=isWhisper)
+                                     isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=True, extensionAction='search')
                     else:
                         self.message(channel, "Multiple results (Use !lookup for more details): " + ", ".join(
-                            map(lambda waifu: str(waifu['id']), result)), isWhisper=isWhisper)
+                            map(lambda waifu: str(waifu['id']), result)), isWhisper=isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=True,
+                                     extensionAction='search')
 
                     if sender not in superadmins:
                         useInfoCommand(tags['user-id'], sender, channel, isWhisper)
@@ -3527,7 +3691,8 @@ class NepBot(NepBotClass):
                 if len(args) < 1:
                     self.message(channel,
                                  "Usage: !bet <time> OR !bet status OR !bet packs OR (as channel owner) !bet open OR !bet start OR !bet end OR !bet cancel OR !bet results",
-                                 isWhisper)
+                                 isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=False, extensionAction='bet')
                     return
                 canAdminBets = sender in superadmins or (sender in admins and isMarathonChannel)
                 canManageBets = canAdminBets or str(tags["badges"]).find("broadcaster") > -1
@@ -3535,7 +3700,9 @@ class NepBot(NepBotClass):
                 bet = parseBetTime(args[0])
                 if bet:
                     if sender == channel[1:]:
-                        self.message(channel, "You can't bet in your own channel, sorry!", isWhisper)
+                        self.message(channel, "You can't bet in your own channel, sorry!", isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='bet')
                         return
                     open = placeBet(channel, tags["user-id"], bet["total"])
                     if open:
@@ -3546,9 +3713,12 @@ class NepBot(NepBotClass):
                                          s=bet["seconds"],
                                          ms=bet["ms"],
                                          name=tags['display-name']),
-                                     isWhisper)
+                                     isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='bet')
                     else:
-                        self.message(channel, "The bets aren't open right now, sorry!", isWhisper)
+                        self.message(channel, "The bets aren't open right now, sorry!", isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='bet')
                     return
                 else:
                     subcmd = str(args[0]).lower()
@@ -3954,7 +4124,8 @@ class NepBot(NepBotClass):
                     else:
                         self.message(channel,
                                      "Usage: !bet <time> OR !bet status OR (as channel owner) !bet open OR !bet start OR !bet end OR !bet cancel OR !bet results",
-                                     isWhisper)
+                                     isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='bet')
                     return
             if command == "import" and sender in superadmins:
                 if len(args) != 1:
@@ -4050,8 +4221,8 @@ class NepBot(NepBotClass):
                     return
             if command == "debug" and sender in superadmins:
                 if debugMode:
-                    updateBoth("Hyperdimension Neptunia", "Testing title updates.")
-                    self.message(channel, "Title and game updated for testing purposes")
+                    self.message(channel, "Attempting to receive Extension message... [NYI]")
+                    ## TODO
                 else:
                     self.message(channel, "Debug mode is off. Debug command disabled.")
                 return
@@ -4067,7 +4238,9 @@ class NepBot(NepBotClass):
                     cur.execute("SELECT id, status FROM giveaways ORDER BY id DESC LIMIT 1")
                     giveaway_info = cur.fetchone()
                     if giveaway_info is None or giveaway_info[1] == 'closed':
-                        self.message(channel, "There is not an open giveaway right now.", isWhisper)
+                        self.message(channel, "There is not an open giveaway right now.", isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='giveaway')
                         cur.close()
                         return
 
@@ -4078,7 +4251,8 @@ class NepBot(NepBotClass):
                     if entry_count != 0:
                         self.message(channel,
                                      "%s -> You have already entered the current giveaway." % tags["display-name"],
-                                     isWhisper)
+                                     isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='giveaway')
                         cur.close()
                         return
 
@@ -4087,7 +4261,8 @@ class NepBot(NepBotClass):
                                 [giveaway_info[0], tags['user-id'], current_milli_time()])
                     self.message(channel,
                                  "%s -> You have been entered into the current giveaway." % tags["display-name"],
-                                 isWhisper)
+                                 isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=False, extensionAction='giveaway')
                     cur.close()
                     return
 
@@ -4169,7 +4344,9 @@ class NepBot(NepBotClass):
                     if len(args) == 0:
                         # check for info
                         if raffle_info is None or raffle_info[1] == 'done':
-                            self.message(channel, "No raffle is open at this time.", isWhisper)
+                            self.message(channel, "No raffle is open at this time.", isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                         extensionAction='raffle')
                             return
                         else:
                             cur.execute(
@@ -4212,18 +4389,24 @@ class NepBot(NepBotClass):
                     if subcmd == 'buy':
                         if raffle_info[1] != 'open':
                             self.message(channel,
-                                         "Raffle ticket purchases aren't open right now. Use !raffle to check the overall status.")
+                                         "Raffle ticket purchases aren't open right now. Use !raffle to check the overall status.",
+                                         isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='raffle')
                             return
 
                         if len(args) < 2:
-                            self.message(channel, "Usage: !raffle buy <amount>", isWhisper)
+                            self.message(channel, "Usage: !raffle buy <amount>", isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                         extensionAction='raffle')
                             return
 
                         try:
                             tickets = int(args[1])
                             assert tickets >= 0
                         except Exception:
-                            self.message(channel, "Invalid amount of tickets specified.", isWhisper)
+                            self.message(channel, "Invalid amount of tickets specified.", isWhisper,
+                                         isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='raffle')
                             return
 
                         cur.execute(
@@ -4238,16 +4421,22 @@ class NepBot(NepBotClass):
                             if can_buy == 0:
                                 self.message(channel,
                                              "%s, you're already at the maximum of %d tickets for this raffle. Please wait for the drawing." % (
-                                                 tags['display-name'], raffle_info[3]), isWhisper)
+                                                 tags['display-name'], raffle_info[3]), isWhisper,
+                                             isExtension=isExtension, extensionJWT=extensionJWT,
+                                             extensionTarget=extensionTarget, success=False, extensionAction='raffle')
                             else:
                                 self.message(channel,
                                              "%s, you can only buy %d more tickets for this raffle. Please adjust your purchase." % (
-                                                 tags['display-name'], can_buy), isWhisper)
+                                                 tags['display-name'], can_buy), isWhisper, isExtension=isExtension,
+                                             extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                             extensionAction='raffle')
                             return
 
                         if not hasPoints(tags['user-id'], cost):
                             self.message(channel, "%s, you don't have the %d points required to buy %d tickets." % (
-                                tags['display-name'], cost, tickets), isWhisper)
+                                tags['display-name'], cost, tickets), isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                         extensionAction='raffle')
                             return
 
                         # okay, buy the tickets
@@ -4262,7 +4451,9 @@ class NepBot(NepBotClass):
                                 [tickets, current_milli_time(), raffle_info[0], tags['user-id']])
 
                         self.message(channel, "%s, you successfully bought %d raffle tickets for %d points." % (
-                            tags['display-name'], tickets, cost), isWhisper)
+                            tags['display-name'], tickets, cost), isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=True,
+                                     extensionAction='raffle')
                         return
 
                     if sender not in superadmins:
@@ -4396,7 +4587,8 @@ class NepBot(NepBotClass):
                 if len(args) == 0:
                     self.message(channel,
                                  "Usage: !bounty <ID> <amount> / !bounty list / !bounty check <ID> / !bounty cancel <ID>",
-                                 isWhisper=isWhisper)
+                                 isWhisper=isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                 extensionTarget=extensionTarget, success=False, extensionAction='bounty')
                     return
                 subcmd = args[0].lower()
 
@@ -4407,7 +4599,9 @@ class NepBot(NepBotClass):
 
                 if subcmd == "check":
                     if len(args) != 2:
-                        self.message(channel, "Usage: !bounty check <ID>", isWhisper=isWhisper)
+                        self.message(channel, "Usage: !bounty check <ID>", isWhisper=isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                     extensionAction='bounty')
                         return
 
                     if infoCommandAvailable(tags['user-id'], sender, tags['display-name'], self, channel, isWhisper):
@@ -4417,7 +4611,9 @@ class NepBot(NepBotClass):
                             assert waifu['can_lookup'] == 1
 
                             if waifu['base_rarity'] >= int(config["numNormalRarities"]):
-                                self.message(channel, "Bounties cannot be placed on special waifus.", isWhisper)
+                                self.message(channel, "Bounties cannot be placed on special waifus.", isWhisper,
+                                             isExtension=isExtension, extensionJWT=extensionJWT,
+                                             extensionTarget=extensionTarget, success=False, extensionAction='bounty')
                                 return
 
                             if sender not in superadmins:
@@ -4447,18 +4643,26 @@ class NepBot(NepBotClass):
                                     if myorderinfo[0] == allordersinfo[1]:
                                         self.message(channel,
                                                      "There are currently {count} bounties for [{id}] {name}. You are the highest bidder at {highest} points.".format(
-                                                         **minfo), isWhisper)
+                                                         **minfo), isWhisper, isExtension=isExtension,
+                                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget,
+                                                     success=True, extensionAction='bounty')
                                     else:
                                         self.message(channel,
                                                      "There are currently {count} bounties for [{id}] {name}. Your bid of {mine} points is lower than the highest bid of {highest} points.".format(
-                                                         **minfo), isWhisper)
+                                                         **minfo), isWhisper, isExtension=isExtension,
+                                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget,
+                                                     success=True, extensionAction='bounty')
                                 else:
                                     self.message(channel,
                                                  "There are currently {count} bounties for [{id}] {name}. The highest bid is {highest} points. You don't have a bounty on this waifu right now.".format(
-                                                     **minfo), isWhisper)
+                                                     **minfo), isWhisper, isExtension=isExtension,
+                                                 extensionJWT=extensionJWT, extensionTarget=extensionTarget,
+                                                 success=True, extensionAction='bounty')
 
                         except Exception:
-                            self.message(channel, "Invalid waifu ID.", isWhisper=isWhisper)
+                            self.message(channel, "Invalid waifu ID.", isWhisper=isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                         extensionAction='bounty')
 
                     return
                 if subcmd == "list":
@@ -4472,7 +4676,8 @@ class NepBot(NepBotClass):
                     if len(buyorders) == 0:
                         self.message(channel,
                                      "%s, you don't have any bounties active right now!" % tags['display-name'],
-                                     isWhisper)
+                                     isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=True, extensionAction='bounty')
                         return
 
                     messages = ["%s, you have %d active bounties: " % (tags['display-name'], len(buyorders))]
@@ -4485,19 +4690,24 @@ class NepBot(NepBotClass):
                             messages[-1] += message
 
                     for message in messages:
-                        self.message(channel, message, isWhisper)
+                        self.message(channel, message, isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=True, extensionAction='bounty')
 
                     return
 
                 if subcmd == "place" or subcmd == "add":
                     if len(args) < 3:
-                        self.message(channel, "Usage: !bounty <ID> <amount>", isWhisper)
+                        self.message(channel, "Usage: !bounty <ID> <amount>", isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                     extensionAction='bounty')
                         return
 
                     if not followsme(tags['user-id']):
                         self.message(channel,
                                      "%s, you must follow the bot to use bounties so you can be sent a whisper if your order is filled." %
-                                     tags['display-name'], isWhisper)
+                                     tags['display-name'], isWhisper, isExtension=isExtension,
+                                     extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                     extensionAction='bounty')
                         return
 
                     try:
@@ -4506,7 +4716,9 @@ class NepBot(NepBotClass):
                         assert waifu['can_lookup'] == 1
 
                         if waifu['base_rarity'] >= int(config["numNormalRarities"]):
-                            self.message(channel, "Bounties cannot be placed on special waifus.", isWhisper)
+                            self.message(channel, "Bounties cannot be placed on special waifus.", isWhisper,
+                                         isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='bounty')
                             return
 
                         amount = int(args[2])
@@ -4521,7 +4733,9 @@ class NepBot(NepBotClass):
                         if myorderinfo is not None and myorderinfo[1] == amount:
                             self.message(channel,
                                          "%s, you already have a bounty in place for that waifu for that exact amount." %
-                                         tags['display-name'], isWhisper)
+                                         tags['display-name'], isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                         extensionAction='bounty')
                             cur.close()
                             return
 
@@ -4533,18 +4747,23 @@ class NepBot(NepBotClass):
                             if myorderinfo is None:
                                 self.message(channel,
                                              "%s, you don't have enough points to place a bounty with that amount." %
-                                             tags['display-name'], isWhisper)
+                                             tags['display-name'], isWhisper, isExtension=isExtension,
+                                             extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                             extensionAction='bounty')
                             else:
                                 self.message(channel,
                                              "%s, you don't have enough points to increase your bounty to that amount." %
-                                             tags['display-name'], isWhisper)
+                                             tags['display-name'], isWhisper, isExtension=isExtension,
+                                             extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                             extensionAction='bounty')
                             cur.close()
                             return
 
                         # check for hand space
                         if myorderinfo is None and currentCards(tags['user-id']) >= handLimit(tags['user-id']):
                             self.message(channel, "%s, you don't have a free hand space to make a new bounty!" % tags[
-                                'display-name'], isWhisper)
+                                'display-name'], isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='bounty')
                             cur.close()
                             return
 
@@ -4560,7 +4779,9 @@ class NepBot(NepBotClass):
                         if amount < min_amount or amount > max_amount:
                             self.message(channel,
                                          "%s, your bounty for this waifu must fall between %d and %d points." % (
-                                             tags['display-name'], min_amount, max_amount), isWhisper)
+                                             tags['display-name'], min_amount, max_amount), isWhisper,
+                                         isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='bounty')
                             cur.close()
                             return
 
@@ -4579,7 +4800,9 @@ class NepBot(NepBotClass):
                             self.message(channel,
                                          "%s, the lowest you can reduce your bounty to is %d points due to the bid of %d points below it." % (
                                              tags['display-name'], highest_other_bid + minimum_outbid,
-                                             highest_other_bid))
+                                             highest_other_bid), isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                         extensionAction='bounty')
                             cur.close()
                             return
 
@@ -4591,7 +4814,9 @@ class NepBot(NepBotClass):
                         if dupe_amt > 0:
                             self.message(channel,
                                          "%s, someone else has already placed a bounty on that waifu for %d points. Choose another amount." % (
-                                             tags['display-name'], amount), isWhisper)
+                                             tags['display-name'], amount), isWhisper, isExtension=isExtension,
+                                         extensionJWT=extensionJWT, extensionTarget=extensionTarget, success=False,
+                                         extensionAction='bounty')
                             cur.close()
                             return
 
@@ -4603,11 +4828,15 @@ class NepBot(NepBotClass):
                                 if myorderinfo is None:
                                     self.message(channel,
                                                  '%s, are you sure you want to place a bounty for lower than the current highest bid (%d points)? Enter "!bounty %d %d yes" if you are sure.' % msgargs,
-                                                 isWhisper)
+                                                 isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                                 extensionTarget=extensionTarget, success=False,
+                                                 extensionAction='bounty')
                                 else:
                                     self.message(channel,
                                                  '%s, are you sure you want to change your bounty to a lower amount than the current other highest bid (%d points)? Enter "!bounty %d %d yes" if you are sure.' % msgargs,
-                                                 isWhisper)
+                                                 isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                                 extensionTarget=extensionTarget, success=False,
+                                                 extensionAction='bounty')
                                 cur.close()
                                 return
 
@@ -4617,7 +4846,8 @@ class NepBot(NepBotClass):
                                 msgargs = (tags['display-name'], amount_refund, waifu['id'], amount)
                                 self.message(channel,
                                              '%s, are you sure you want to place a bounty above the normal cap for that waifu\'s rarity? If you cancel it, you will only receive %d points back unless a higher bounty than yours is filled. Enter "!bounty %d %d yes" if you are sure.' % msgargs,
-                                             isWhisper)
+                                             isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                             extensionTarget=extensionTarget, success=False, extensionAction='bounty')
                                 cur.close()
                                 return
 
@@ -4634,12 +4864,16 @@ class NepBot(NepBotClass):
                                 "INSERT INTO bounties (userid, waifuid, amount, status, created) VALUES(%s, %s, %s, 'open', %s)",
                                 [tags['user-id'], waifu['id'], amount, current_milli_time()])
                             self.message(channel, "%s, you placed a new bounty on [%d] %s for %d points." % (
-                                tags['display-name'], waifu['id'], waifu['name'], amount), isWhisper)
+                                tags['display-name'], waifu['id'], waifu['name'], amount), isWhisper,
+                                         isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=True, extensionAction='bounty')
                         else:
                             cur.execute("UPDATE bounties SET amount = %s, updated = %s WHERE id = %s",
                                         [amount, current_milli_time(), myorderinfo[0]])
                             self.message(channel, "%s, you updated your bounty on [%d] %s to %d points." % (
-                                tags['display-name'], waifu['id'], waifu['name'], amount), isWhisper)
+                                tags['display-name'], waifu['id'], waifu['name'], amount), isWhisper,
+                                         isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=True, extensionAction='bounty')
 
                         # outbid message?
                         if outbidding:
@@ -4657,12 +4891,16 @@ class NepBot(NepBotClass):
                         return
 
                     except Exception as exc:
-                        self.message(channel, "Usage: !bounty <ID> <amount>", isWhisper=isWhisper)
+                        self.message(channel, "Usage: !bounty <ID> <amount>", isWhisper=isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='bounty')
                         return
 
                 if subcmd == "cancel":
                     if len(args) != 2:
-                        self.message(channel, "Usage: !bounty cancel <ID>", isWhisper=isWhisper)
+                        self.message(channel, "Usage: !bounty cancel <ID>", isWhisper=isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='bounty')
                         return
 
                     try:
@@ -4693,22 +4931,28 @@ class NepBot(NepBotClass):
                                 addPoints(tags['user-id'], refund)
                                 self.message(channel,
                                              "%s, you cancelled your bounty for [%d] %s and received only %d points back since it was above cap." % (
-                                                 tags['display-name'], waifu['id'], waifu['name'], refund), isWhisper)
+                                                 tags['display-name'], waifu['id'], waifu['name'], refund), isWhisper,
+                                             isExtension=isExtension, extensionJWT=extensionJWT,
+                                             extensionTarget=extensionTarget, success=True, extensionAction='bounty')
                             else:
                                 addPoints(tags['user-id'], myorderinfo[1])
                                 self.message(channel,
                                              "%s, you cancelled your bounty for [%d] %s and received your %d points back." % (
                                                  tags['display-name'], waifu['id'], waifu['name'], myorderinfo[1]),
-                                             isWhisper)
+                                             isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                             extensionTarget=extensionTarget, success=True, extensionAction='bounty')
                         else:
                             self.message(channel,
                                          "%s, you don't have an active bounty for that waifu!" % tags['display-name'],
-                                         isWhisper)
+                                         isWhisper, isExtension=isExtension, extensionJWT=extensionJWT,
+                                         extensionTarget=extensionTarget, success=False, extensionAction='bounty')
                         cur.close()
                         return
 
                     except Exception:
-                        self.message(channel, "Usage: !bounty cancel <ID>", isWhisper=isWhisper)
+                        self.message(channel, "Usage: !bounty cancel <ID>", isWhisper=isWhisper,
+                                     isExtension=isExtension, extensionJWT=extensionJWT,
+                                     extensionTarget=extensionTarget, success=False, extensionAction='bounty')
                         return
             if command == "raritychange" and sender in superadmins:
                 if len(args) < 2:
